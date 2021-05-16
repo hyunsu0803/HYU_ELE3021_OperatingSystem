@@ -95,3 +95,56 @@ sys_getppid(void)
 {
 	return getppid();
 }
+
+int
+sys_yield(void)
+{
+	yield();
+	return 0;
+}
+
+int
+sys_getlev(void)
+{
+	return getlev();
+}
+
+int 
+sys_setpriority(void)
+{
+	int pid;
+	int priority;
+	int ret;
+	if(argint(0, &pid) < 0)
+		return -1;
+	if(argint(1, &priority) < 0)
+		return -1;
+
+	ret = setpriority(pid, priority);
+	if(ret == -1){
+		cprintf("no such process!\n");
+		return -1;
+	}
+	else if(ret == -2){
+		cprintf("input priority range 0~10\n");
+		return -2;
+	}
+	else 
+		return ret;
+}
+
+int 
+sys_monopolize(void)
+{
+	int password = 0;
+
+	if(argint(0, &password) < 0)
+		return -1;
+
+	monopolize(password);
+	return 0;
+}
+
+
+
+

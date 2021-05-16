@@ -121,6 +121,10 @@ int             wait(void);
 void            wakeup(void*);
 void            yield(void);
 int				getppid(void);
+int 			getlev(void);
+int 			setpriority(int pid, int priority);
+void 			monopolize(int password);
+void			priority_boosting(void);
 
 // swtch.S
 void            swtch(struct context**, struct context*);

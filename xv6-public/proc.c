@@ -11,6 +11,7 @@ struct {
   struct spinlock lock;
   struct proc proc[NPROC];
 } ptable;
+int boost = 0;
 
 static struct proc *initproc;
 
@@ -111,6 +112,10 @@ found:
   p->context = (struct context*)sp;
   memset(p->context, 0, sizeof *p->context);
   p->context->eip = (uint)forkret;
+  p->time_quantum = 0;
+  p->level = 0;
+  p->mono = 0;
+  p->priority = 0;
 
   return p;
 }
@@ -215,6 +220,7 @@ fork(void)
   acquire(&ptable.lock);
 
   np->state = RUNNABLE;
+  //np->time_quantum = 0;
 
   release(&ptable.lock);
 
@@ -311,6 +317,208 @@ wait(void)
   }
 }
 
+#ifdef FCFS_SCHED
+void
+scheduler(void)
+{
+	struct proc *p;
+	struct cpu *c = mycpu();
+	c->proc = 0;
+
+	for(;;){
+		//Enable interrupts on this processor.
+		sti();
+
+		// Loop over process table looking for process to run.
+		acquire(&ptable.lock);
+			
+		struct proc *pick = 0;
+
+		for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+			if(p->state != RUNNABLE){
+				continue;
+			}
+			else if(!pick || pick->pid > p->pid){
+				pick = p;
+			}
+		}
+		
+		if(pick){
+			if(pick->time_quantum >= 200){
+				pick->killed = 1;
+				if(pick->state == SLEEPING)
+					pick->state = RUNNABLE;
+			}
+
+			pick->time_quantum++;
+			
+			// Switch to pick process. 
+			c->proc = pick;
+			switchuvm(pick);
+			pick->state = RUNNING;
+
+			swtch(&(c->scheduler), pick->context);
+			switchkvm();
+
+			// Process is done running for now.
+			// It should have changed its p->state before coming back.
+			c->proc = 0;
+
+		}
+
+		release(&ptable.lock);
+	}
+}
+
+#elif MULTILEVEL_SCHED
+
+void
+scheduler(void)
+{
+	struct proc *p;
+	struct cpu *c = mycpu();
+	c->proc = 0;
+	
+	for(;;){
+		// Enable interrupts on this processor.
+		sti();
+
+		// Loop over process table looking for process to run.
+		acquire(&ptable.lock);
+
+		struct proc *odd = 0;
+		int emptyRR = 1;
+		for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+			if(p->state != RUNNABLE){
+				continue;
+			}
+			
+			// Round Robin with even processes
+			if(p->pid % 2 == 0){
+				emptyRR = 0;
+
+				c->proc = p;
+				switchuvm(p);
+				p->state = RUNNING;
+				
+				swtch(&(c->scheduler), p->context);
+				switchkvm();
+				
+				c->proc = 0;
+			}
+			
+			else{
+				if(!odd || odd->pid > p->pid){
+					odd = p;
+				}
+			}
+		}
+
+		// fcfs with odd processes
+		if(emptyRR && odd){
+			c->proc = odd;
+			switchuvm(odd);
+			odd->state = RUNNING;
+
+			swtch(&(c->scheduler), odd->context);
+			switchkvm();
+
+			c->proc = 0;
+		}
+
+		release(&ptable.lock);
+	}
+
+}
+
+#elif MLFQ_SCHED
+
+void
+scheduler(void)
+{
+	struct proc *p;
+	struct cpu *c = mycpu();
+	c->proc = 0;
+
+	for(;;){
+		sti();
+
+		acquire(&ptable.lock);
+		
+		struct proc* l1pick = 0;
+		int emptyL0 = 1;
+		for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+			if(p->state != RUNNABLE){
+				continue;
+			}
+
+			if(p->level == 0){
+				if(p->time_quantum == 4){
+					p->level = 1;
+					p->time_quantum = 0;
+				}
+				else{
+					emptyL0 = 0;
+					p->time_quantum++;
+					
+					release(&ptable.lock);
+					priority_boosting();
+					acquire(&ptable.lock);
+
+					c->proc = p;
+					switchuvm(p);
+					p->state = RUNNING;
+
+					swtch(&(c->scheduler), p->context);
+					switchkvm();
+				
+					c->proc = 0;
+
+				}
+			}
+	
+			else if(p->level == 1){
+				if(!l1pick)
+					l1pick = p;
+				else if(l1pick->priority == p->priority && l1pick->pid > p->pid)
+					l1pick = p;
+				else if(l1pick->priority < p->priority)
+					l1pick = p;
+				
+			}
+		}
+
+		if(emptyL0 && l1pick){
+			if(l1pick->time_quantum == 8){
+				if(l1pick->priority)
+					l1pick->priority--;
+				l1pick->time_quantum = 0;
+			}
+			else{
+				l1pick->time_quantum++;
+				
+				release(&ptable.lock);
+				priority_boosting();
+				acquire(&ptable.lock);
+
+				c->proc = l1pick;
+				switchuvm(l1pick);
+				l1pick->state = RUNNING;
+
+				swtch(&(c->scheduler), l1pick->context);
+				switchkvm();
+
+				c->proc = 0;
+				
+			}
+		}
+
+		release(&ptable.lock);
+	}
+}
+
+#else
+
 //PAGEBREAK: 42
 // Per-CPU process scheduler.
 // Each CPU calls scheduler() after setting itself up.
@@ -354,6 +562,7 @@ scheduler(void)
 
   }
 }
+#endif
 
 // Enter scheduler.  Must hold only ptable.lock
 // and have changed proc->state. Saves and restores
@@ -460,8 +669,10 @@ wakeup1(void *chan)
   struct proc *p;
 
   for(p = ptable.proc; p < &ptable.proc[NPROC]; p++)
-    if(p->state == SLEEPING && p->chan == chan)
+    if(p->state == SLEEPING && p->chan == chan){
       p->state = RUNNABLE;
+	  p->time_quantum = 0;
+	}
 }
 
 // Wake up all processes sleeping on chan.
@@ -538,3 +749,63 @@ getppid(void)
 {
 	return myproc()->parent->pid;
 }
+
+int
+getlev(void)
+{
+	struct proc* p = myproc();
+	return p->level;
+}
+
+int 
+setpriority(int pid, int priority)
+{
+	if(0 >  priority || priority > 10)
+		return -2;
+	struct proc* curproc = myproc();
+	if(pid != curproc->pid)
+		return -1;
+	curproc->priority = priority;
+		
+	return 0;
+}
+
+void
+monopolize(int password)
+{
+	struct proc* curproc = myproc();
+
+	if(password != 2019023436){
+		cprintf("Wrong monopolizing password!\n");
+		curproc->killed = 1;
+	}
+	else{
+		if(curproc->mono){
+			curproc->mono = 0;
+			curproc->priority = 0;
+			curproc->level = 0;
+		}
+		else{
+			curproc->mono = 1;
+		}
+	}
+}
+
+void 
+priority_boosting(void)
+{
+	boost++;
+	if(boost == 200){
+		//cprintf("priority_boosting: %d\n", boost);
+		acquire(&ptable.lock);
+		struct proc* p = 0;
+		for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+			p->time_quantum = 0;
+			p->level = 0;
+			p->priority = 0;
+		}
+		boost = 0;
+		release(&ptable.lock);
+	}
+}
+

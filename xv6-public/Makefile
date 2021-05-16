@@ -91,6 +91,9 @@ ifneq ($(shell $(CC) -dumpspecs 2>/dev/null | grep -e '[^f]nopie'),)
 CFLAGS += -fno-pie -nopie
 endif
 
+SCHED_POLICY = DEFAULT
+CFLAGS += -D $(SCHED_POLICY)
+
 xv6.img: bootblock kernel
 	dd if=/dev/zero of=xv6.img count=10000
 	dd if=bootblock of=xv6.img conv=notrunc
@@ -184,6 +187,10 @@ UPROGS=\
 	_zombie\
 	_project01_1\
 	_project01_2\
+	_test_yield\
+	_p2_fcfs_test\
+	_p2_ml_test\
+	_p2_mlfq_test\
 
 fs.img: mkfs README $(UPROGS)
 	./mkfs fs.img README $(UPROGS)
@@ -253,7 +260,8 @@ qemu-nox-gdb: fs.img xv6.img .gdbinit
 EXTRA=\
 	mkfs.c ulib.c user.h cat.c echo.c forktest.c grep.c kill.c\
 	ln.c ls.c mkdir.c rm.c stressfs.c usertests.c wc.c zombie.c\
-	printf.c umalloc.c project01_1.c project01_2.c\
+	printf.c umalloc.c project01_1.c project01_2.c test_yield.c\
+	p2_fcfs_test.c p2_ml_test.c p2_mlfq_test.c\
 	README dot-bochsrc *.pl toc.* runoff runoff1 runoff.list\
 	.gdbinit.tmpl gdbutil\
 
